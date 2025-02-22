@@ -11,17 +11,21 @@ use Symfony\Component\Process\Process;
 
 class CollectIconsFromFilament extends Command
 {
-    protected $signature = 'icons:collect:filament {base_path} {--output= : Export to this directory, either relative to storage/export or an absolute path to another Laravel project.}';
+    protected $signature = 'icons:collect:filament {base_path}
+     {--replace : Replace the custom icons collection in that project with the collected ones.}
+     {--output= : Export to this directory, either relative to storage/export or an absolute path to another Laravel project.}
+     {--exclude=heroicon : Exclude these collections from the generated one, use the prefix comma-separated.}';
 
     protected $description = 'Gather all specified icons to a specific folder.';
 
     public function handle()
     {
         $dir = $this->argument('base_path');
+        $excluded = collect(explode(',', $this->option('exclude')))->filter();
 
         $sets = collect(app(Factory::class)->all())
             ->pluck('prefix')
-            ->reject(fn($i) => $i === 'heroicons')
+            ->diff($excluded)
             ->implode('|');
         $grep_command = "grep -hroE '\<($sets)-[a-zA-Z0-9-]+\>' --color=never $dir/app/Filament $dir/resources/views";
         // -h: Does not report the file
@@ -30,9 +34,14 @@ class CollectIconsFromFilament extends Command
         $icons = Process::fromShellCommandline($grep_command)->mustRun()->getOutput();
         $icons = array_filter(explode("\n", $icons));
 
-        $path = $this->option('output') ?: now()->format('YmdHis');
+        if ($this->option('replace')) {
+            $path = $dir . '/resources/svg';
+        } else {
+            $path = $this->option('output') ?: now()->format('YmdHis');
+        }
         if (!str($path)->startsWith('/')) {
             $storage = Storage::disk('export');
+            $storage->makeDirectory($path);
             $path = $storage->path($path);
         }
         File::cleanDirectory($path);
@@ -42,10 +51,11 @@ class CollectIconsFromFilament extends Command
                 $svg = svg($icon);
                 file_put_contents($path . '/' . $icon . '.svg', $svg->contents());
             } catch (SvgNotFound $e) {
-                $this->error("'$icon':" . $e->getMessage());
+                $this->error("'$icon': " . $e->getMessage());
             }
         }
 
         $this->info("Done! Exported " . count($icons) . " SVGs to '$path'");
+        $this->info("Excluded: " . $excluded->implode('|'));
     }
 }
